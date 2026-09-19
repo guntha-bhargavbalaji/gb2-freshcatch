@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GB² FreshCatch Admin</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header class="site-header"><div class="container header-inner"><a class="brand" href="index.html"><img src="logo.jpg" alt="GB² FreshCatch"></a><nav><a href="index.html">View Store</a></nav></div></header>
+<main class="section"><div class="container">
+<div id="loginBox"><span class="eyebrow">SECURE ADMIN</span><h1>Admin Login</h1>
+<form id="loginForm" class="notice-card"><label>Email<input id="email" type="email" required></label><label>Password<input id="password" type="password" required></label><button class="btn primary">Login</button><p id="loginMsg" class="muted"></p></form></div>
+<div id="panel" style="display:none">
+<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><span class="eyebrow">ADMIN PANEL</span><h1>Manage Products</h1></div><button id="logout" class="btn secondary">Log out</button></div>
+<form id="productForm" class="notice-card" style="margin:20px 0"><input type="hidden" id="pid">
+<label>Product name<input id="pname" required></label><label>Category<select id="pcat"><option>Fish</option><option>Prawns</option><option>Crabs</option><option>Chicken</option><option>Mutton</option><option>Eggs</option></select></label>
+<label>Price<input id="pprice" type="number" min="0" step="0.01" required></label><label>Unit<select id="punit"><option>per kg</option><option>per piece</option><option>per egg</option><option>per 500g</option></select></label>
+<label>Product image<input id="pimageFile" type="file" accept="image/*"><small class="muted">Choose an image from your phone or computer. It will be uploaded securely to Supabase.</small></label><div id="imagePreview" class="image-preview"></div><label>Image URL (optional)<input id="pimage" placeholder="https://..." readonly></label><label>Emoji / icon (optional)<input id="pemoji" placeholder="🐟"></label><label>Description<textarea id="pdesc" rows="2"></textarea></label>
+<label><span><input id="pactive" type="checkbox" checked> Active / visible to customers</span></label>
+<div><button class="btn primary" id="saveBtn">Add Product</button> <button class="btn secondary" type="button" id="cancelBtn" style="display:none">Cancel</button></div><p id="formMsg" class="muted"></p></form>
+<section><h2>Products</h2><div id="adminList" class="product-grid"></div></section>
+</div></div></main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script><script src="config.js"></script>
+<script>
+const sb=(window.SUPABASE_URL.startsWith("http")&&window.SUPABASE_ANON_KEY.length>20)?supabase.createClient(window.SUPABASE_URL,window.SUPABASE_ANON_KEY):null;
+const BUCKET="product-images";
+let editing=null;
+const $=id=>document.getElementById(id), money=n=>"₹"+Number(n).toLocaleString("en-IN");
+
+async function isAdmin(){
+ if(!sb)return false;
+ const {data:{user}}=await sb.auth.getUser();
+ if(!user)return false;
+ const {data}=await sb.from("admin_users").select("user_id").eq("user_id",user.id).maybeSingle();
+ return !!data;
+}
+async function show(){
+ if(!sb){$("loginMsg").textContent="Configure config.js first.";return}
+ if(await isAdmin()){$("loginBox").style.display="none";$('panel').style.display="block";load()}
+ else{$("loginBox").style.display="block";$('panel').style.display="none"}
+}
+$("loginForm").onsubmit=async e=>{e.preventDefault();if(!sb)return;const {error}=await sb.auth.signInWithPassword({email:$("email").value,password:$("password").value});$("loginMsg").textContent=error?error.message:"";if(!error)show()};
+$("logout").onclick=async()=>{await sb.auth.signOut();show()};
+
+async function load(){
+ const {data,error}=await sb.from("products").select("*").order("created_at",{ascending:false});
+ if(error){$("adminList").innerHTML='<div class="empty">Could not load products. Check RLS policies.</div>';return}
+ $("adminList").innerHTML=(data||[]).map(p=>`<article class="product-card"><div class="product-image">${p.image_url?`<img src="${esc(p.image_url)}" alt="" style="width:100%;height:100%;object-fit:cover">`:(p.emoji||"🛒")}</div><div class="product-body"><h3>${esc(p.name)}</h3><div>${money(p.price)} ${esc(p.unit)}</div><p>${esc(p.description||"")}</p><span class="unit">${p.active?"Visible":"Hidden"}</span><br><button class="btn secondary" onclick="editP('${p.id}')">Edit</button> <button class="danger" onclick="delP('${p.id}')">Delete</button></div></article>`).join("");
+}
+function esc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
+function resetForm(){editing=null;$("productForm").reset();$("pactive").checked=true;$("saveBtn").textContent="Add Product";$("cancelBtn").style.display="none";$("pimage").value="";$("imagePreview").innerHTML=""}
+
+$("pimageFile").addEventListener("change",()=>{
+ const file=$("pimageFile").files[0];
+ if(!file){$("imagePreview").innerHTML="";return}
+ if(!file.type.startsWith("image/")){alert("Please choose an image file.");$("pimageFile").value="";return}
+ const reader=new FileReader();reader.onload=()=>{$("imagePreview").innerHTML=`<img src="${reader.result}" alt="Preview">`};reader.readAsDataURL(file);
+});
+
+async function uploadImage(file){
+ const ext=(file.name.split(".").pop()||"jpg").toLowerCase().replace(/[^a-z0-9]/g,"")||"jpg";
+ const path=`${crypto.randomUUID()}.${ext}`;
+ const {error}=await sb.storage.from(BUCKET).upload(path,file,{cacheControl:"3600",upsert:false,contentType:file.type});
+ if(error)throw error;
+ const {data}=sb.storage.from(BUCKET).getPublicUrl(path);
+ return data.publicUrl;
+}
+
+async function editP(id){
+ const {data,error}=await sb.from("products").select("*").eq("id",id).single();
+ if(error){alert(error.message);return}
+ editing=data;$("pid").value=data.id;$("pname").value=data.name;$("pcat").value=data.category;$("pprice").value=data.price;$("punit").value=data.unit;$("pimage").value=data.image_url||"";$("pemoji").value=data.emoji||"";$("pdesc").value=data.description||"";$("pactive").checked=data.active;$("pimageFile").value="";
+ $("imagePreview").innerHTML=data.image_url?`<img src="${esc(data.image_url)}" alt="Current image">`:"";
+ $("saveBtn").textContent="Save Changes";$("cancelBtn").style.display="inline-block";scrollTo({top:0,behavior:"smooth"});
+}
+async function delP(id){if(!confirm("Delete this product?"))return;const {error}=await sb.from("products").delete().eq("id",id);if(error)alert(error.message);else load()}
+
+$("productForm").onsubmit=async e=>{
+ e.preventDefault();
+ $("formMsg").textContent="Saving…";$("saveBtn").disabled=true;
+ try{
+  let imageUrl=$("pimage").value.trim()||null;
+  const file=$("pimageFile").files[0];
+  if(file){$("formMsg").textContent="Uploading image…";imageUrl=await uploadImage(file)}
+  const item={name:$("pname").value.trim(),category:$("pcat").value,price:Number($("pprice").value),unit:$("punit").value,image_url:imageUrl,emoji:$("pemoji").value.trim()||null,description:$("pdesc").value.trim()||null,active:$("pactive").checked};
+  const res=editing?await sb.from("products").update(item).eq("id",editing.id):await sb.from("products").insert(item);
+  if(res.error)throw res.error;
+  $("formMsg").textContent="Saved.";resetForm();load();
+ }catch(err){console.error(err);$("formMsg").textContent=err.message||"Could not save product."}
+ finally{$("saveBtn").disabled=false}
+};
+$("cancelBtn").onclick=resetForm;
+show();
+</script></body></html>
